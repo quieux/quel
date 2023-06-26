@@ -1,0 +1,61 @@
+#!/bin/bash
+
+######################################################################
+# Autor     :   Ezequiel Carvalho <queldevelopment@gmail.com>        #
+# Licença   :   MIT                                                  #
+# Descrição :   Instalador de pacotes da distribuição Quieux Linux   #
+######################################################################
+
+
+# Verifica se o nome do pacote foi fornecido como corretamente
+if [ -z "$1" ]; then
+  echo "Por favor, forneça o nome do pacote."
+  exit 1
+fi
+
+arquivo=$1
+pasta_destino="/tmp/$arquivo"
+arquivo_descricao="/quel/$arquivo.txt"
+
+# Verifica se o arquivo existe na pasta /quel/
+if [ ! -f "/quel/$arquivo.quel" ]; then
+  echo "O pacote $arquivo.quel não foi encontrado, verifique a escrita."
+  exit 1
+fi
+
+# Verifica se existe um arquivo de descrição correspondente
+if [ -f "$arquivo_descricao" ]; then
+  cat "$arquivo_descricao"
+else
+  echo "Sem descrição disponível."
+fi
+
+# Pergunta se deseja instalar o pacote
+read -p "Deseja instalar o pacote? Responda com S ou N: " resposta
+
+if [ "$resposta" != "S" ]; then
+  echo "Instalação cancelada."
+  exit 0
+fi
+
+# Cria a pasta de destino
+mkdir -p "$pasta_destino"
+
+# Descompacta o arquivo .quel dentro da pasta de destino
+cd "$pasta_destino" || exit 1
+unsquashfs "/quel/$arquivo.quel"
+
+# Copia os arquivos para a raiz do sistema
+cp -R "$pasta_destino/squashfs-root/"* /
+
+echo "Instalação concluída."
+
+# Pergunta se deseja limpar os resíduos
+read -p "Deseja limpar os resíduos? Responda com S ou N: " resposta_limpeza
+
+if [ "$resposta_limpeza" = "S" ]; then
+  rm -rf "$pasta_destino"
+  echo "Resíduos removidos."
+else
+  echo "Resíduos mantidos."
+fi
