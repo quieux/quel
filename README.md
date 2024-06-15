@@ -1,4 +1,4 @@
-# Quel - gerenciador de pacotes:package: 🇧🇷 [![Bash4.4.18-shield]](http://tldp.org/LDP/abs/html/bashver4.html#AEN21220) [![LICENSE](https://img.shields.io/badge/Licen%C3%A7a-MIT-brightgreen.svg)](https://github.com/slackjeff/bananapkg/blob/master/LICENSE) 
+# Quel - gerenciador de pacotes
 
 > Instalador de pacotes para programas pré-compilados.
 
@@ -10,31 +10,42 @@
 
 ### Requisitos :star:
 * **squashfs** >= 2.x <br/>
+* **wget** >= 1.24.5 <br/>
 ----
 
 ## Instalação 
-**Conceda permissões e execute o script**
+**Faça o download, conceda permissões e execute o script**
 ```bash
-chmod +x quel
-./quel
+git clone https://github.com/quieux/quel.git
+cd quel
+chmod +x install.sh
+sudo ./install.sh
 ```
 
 ### Modo de usar:
 **Digite o comando no terminal:**
+
+Esse comando instala pacotes .quel localmente.
+
 ```bash
-quel teste
+sudo quel -i
 ```
-Ele vai procurar no diretório **/quel/** um arquivos com nome **teste.quel** Em seguida vai descompactar e terminar a instalação.
 
-**Ele utiliza os arquivos:**
-----
+Esse comando remove programas instalados no seu computador
 
-/quel/teste.quel
+```bash
+sudo quel -r
+```
+Esse comando atualiza a lista de repositórios.
 
-/quel/teste.txt (opcional)
+```bash
+sudo quel -u
+```
 
+Esse comando busca o pacote no repositorio e realiza o download para instalação.
 
-
-
+```bash
+sudo quel -d
+```
 
 [Bash4.4.18-shield]: https://img.shields.io/badge/Bash-4.4.18%2B-brightgreen.svg "Bash 4.4.18 Ou superior"
