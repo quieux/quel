@@ -96,18 +96,26 @@ remove_package() {
     rm -f "/quel/$package_name"
 }
 
-# Função para atualizar o arquivo de repositório
+# Função para atualizar os arquivos de repositório
 update_repo_file() {
     local repo_url="https://quieux.github.io/update"
+    local repo_pub_url="https://quieux.github.io/update-pub"
     local repo_file="/etc/quel/repo"
+    local repo_pub_file="/etc/quel/repo-pub"
 
     wget -q "$repo_url" -O "$repo_file"
     if [ $? -ne 0 ]; then
-        echo "Falha ao baixar o arquivo de atualização."
+        echo "Falha ao baixar o arquivo de atualização do repositório normal."
         exit 1
     fi
 
-    echo "Arquivo de repositório atualizado com sucesso."
+    wget -q "$repo_pub_url" -O "$repo_pub_file"
+    if [ $? -ne 0 ]; then
+        echo "Falha ao baixar o arquivo de atualização do repositório público."
+        exit 1
+    fi
+
+    echo "Arquivos de repositório atualizados com sucesso."
 }
 
 # Função para baixar um pacote usando quel-get
@@ -162,7 +170,7 @@ case $1 in
         remove_package "$2"
         ;;
     -u)
-        # Executar a função para atualizar o arquivo de repositório
+        # Executar a função para atualizar os arquivos de repositório
         update_repo_file
         ;;
     -d)
