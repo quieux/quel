@@ -17,7 +17,8 @@ check_root() {
 # Função para descompactar o pacote
 extract_package() {
     local package_path=$1
-    local package_name=$(basename "$package_path" .quel)
+    local package_name
+    package_name=$(basename "$package_path" .quel)
     local tmp_dir="/tmp/$package_name"
     
     mkdir -p "$tmp_dir"
@@ -41,7 +42,8 @@ extract_package() {
 # Função para instalar o pacote
 install_package() {
     local package_path=$1
-    local package_name=$(basename "$package_path" .quel)
+    local package_name
+    package_name=$(basename "$package_path" .quel)
     local tmp_dir="/tmp/$package_name"
 
     read -p "Deseja continuar com a instalação? (S/N): " response
@@ -77,7 +79,8 @@ remove_package() {
         exit 1
     fi
 
-    local file_count=$(wc -l < "/quel/$package_name")
+    local file_count
+    file_count=$(wc -l < "/quel/$package_name")
     echo "Encontrados $file_count arquivos para remoção."
 
     read -p "Tem certeza que deseja remover o pacote $package_name? (S/N): " response
@@ -149,12 +152,43 @@ download_package() {
     quel -i "$package_path"
 }
 
+# Função para baixar um pacote usando quel-get-public
+download_public_package() {
+    local package_name=$1
+    local download_dir="/tmp"
+    
+    echo "Procurando por $package_name nos repositórios públicos online..."
+
+    quel-get-public "$package_name"
+    
+    if [ $? -ne 0 ]; then
+        echo "Pacote não encontrado nos repositórios públicos online."
+        exit 1
+    fi
+
+    local package_path="$download_dir/$package_name.quel"
+    if [ ! -f "$package_path" ]; then
+        echo "Erro ao baixar o pacote."
+        exit 1
+    fi
+
+    echo "Pacote $package_name baixado com sucesso em $download_dir."
+    read -p "Deseja continuar com a instalação? (S/N): " response
+    if [[ "$response" != "S" && "$response" != "s" ]]; then
+        rm -f "$package_path"
+        echo "Download cancelado."
+        exit 0
+    fi
+
+    quel -i "$package_path"
+}
+
 # Verificar se o script está sendo executado como root
 check_root
 
 # Verificar se os argumentos foram passados corretamente
 if [ "$#" -ne 2 ] && [ "$#" -ne 1 ]; then
-    echo "Uso: quel -i <caminho do pacote> | quel -r <nome do pacote> | quel -u | quel -d <nome do pacote>"
+    echo "Uso: quel -i <caminho do pacote> | quel -r <nome do pacote> | quel -u | quel -d <nome do pacote> | quel -pub <nome do pacote>"
     exit 1
 fi
 
@@ -177,9 +211,13 @@ case $1 in
         # Executar a função para baixar o pacote usando quel-get
         download_package "$2"
         ;;
+    -pub)
+        # Executar a função para baixar o pacote usando quel-get-public
+        download_public_package "$2"
+        ;;
     *)
         echo "Comando desconhecido: $1"
-        echo "Uso: quel -i <caminho do pacote> | quel -r <nome do pacote> | quel -u | quel -d <nome do pacote>"
+        echo "Uso: quel -i <caminho do pacote> | quel -r <nome do pacote> | quel -u | quel -d <nome do pacote> | quel -pub <nome do pacote>"
         exit 1
         ;;
 esac
