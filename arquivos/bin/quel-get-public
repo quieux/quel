@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# Verifica se está sendo executado com sudo
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Este script deve ser executado como root"
+    exit 1
+fi
+
+# Verifica se um nome de pacote foi fornecido
+if [ -z "$1" ]; then
+    echo "Uso: quel-get <nome-do-pacote>"
+    exit 1
+fi
+
+PACKAGE_NAME=$1
+
+# Define o caminho para download
+DOWNLOAD_PATH="/tmp/${PACKAGE_NAME}.quel"
+
+# Variável para verificar se o download foi bem-sucedido
+download_successful=false
+
+# Lê cada linha do arquivo repo e tenta o download
+while IFS= read -r REPO_URL; do
+    if [ -z "$REPO_URL" ]; then
+        continue
+    fi
+
+    # Constrói a URL completa do pacote
+    PACKAGE_URL="${REPO_URL}/${PACKAGE_NAME}.quel"
+
+    # Realiza o download do pacote
+    echo "Tentando baixar o pacote de ${PACKAGE_URL}..."
+    wget -O "${DOWNLOAD_PATH}" "${PACKAGE_URL}"
+
+    # Verifica se o download foi bem-sucedido
+    if [ $? -eq 0 ]; then
+        # Verifica se o arquivo baixado tem tamanho zero
+        if [ -s "${DOWNLOAD_PATH}" ]; then
+            echo "Pacote ${PACKAGE_NAME} baixado com sucesso em ${DOWNLOAD_PATH}"
+            download_successful=true
+            break
+        else
+            echo "O arquivo ${PACKAGE_NAME}.quel está vazio. Tentando próxima URL."
+            rm -f "${DOWNLOAD_PATH}"
+        fi
+    else
+        echo "Erro ao tentar baixar o pacote de ${PACKAGE_URL}. Tentando próxima URL."
+    fi
+done < /etc/quel/repo-pub
+
+# Verifica se o download foi bem-sucedido em alguma URL
+if ! $download_successful; then
+    echo "Erro: O pacote ${PACKAGE_NAME} não foi encontrado em nenhuma URL do repositório."
+    exit 1
+fi
