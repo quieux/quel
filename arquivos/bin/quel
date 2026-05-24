@@ -6,10 +6,12 @@
 # Descrição :   Instalador de pacotes da distribuição Quieux Linux   #
 ######################################################################
 
+AUTO_YES=${AUTO_YES:-0}
+
 # Deve ser executado como root
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
-        echo "Este script precisa ser executado como root. Escreva 'sudo' antes do 'quel'."
+        echo "Este script precisa ser executado como root."
         exit 1
     fi
 }
@@ -20,23 +22,22 @@ extract_package() {
     local package_name
     package_name=$(basename "$package_path" .quel)
     local tmp_dir="/tmp/$package_name"
-    
+
     mkdir -p "$tmp_dir"
-    unsquashfs -f -d "$tmp_dir" "$package_path"
+
+    unsquashfs -f -d "$tmp_dir" "$package_path" >/dev/null 2>&1
 
     if [ $? -ne 0 ]; then
-        echo "#01 Erro ao descompactar o pacote."
+        echo "ERRO: Falha ao descompactar pacote."
         exit 1
     fi
 
-    echo "Pacote descompactado com sucesso."
-
-    # Lê qualquer arquivo de descrição dentro da pasta info (a descrição segue modelo descrito na documentação)
-    for desc_file in "$tmp_dir/info/"*; do
-        if [ -f "$desc_file" ]; then
-            cat "$desc_file"
-        fi
-    done
+    # Exibe informações do pacote
+    if [ -d "$tmp_dir/info" ]; then
+        for desc_file in "$tmp_dir/info/"*; do
+            [ -f "$desc_file" ] && cat "$desc_file"
+        done
+    fi
 }
 
 # Função para instalar o pacote
@@ -46,178 +47,207 @@ install_package() {
     package_name=$(basename "$package_path" .quel)
     local tmp_dir="/tmp/$package_name"
 
-    read -p "Deseja continuar com a instalação? (S/N): " response
-    if [[ "$response" != "S" && "$response" != "s" ]]; then
-        rm -rf "$tmp_dir"
-        echo "Instalação cancelada."
-        exit 0
+    if [ "$AUTO_YES" != "1" ]; then
+        read -p "Deseja continuar com a instalação? (S/N): " response
+
+        if [[ "$response" != "S" && "$response" != "s" ]]; then
+            rm -rf "$tmp_dir"
+            echo "Instalação cancelada."
+            exit 0
+        fi
     fi
 
     cp -r "$tmp_dir"/* /
+
     if [ $? -ne 0 ]; then
-        echo "#02 Erro ao instalar o pacote."
+        echo "ERRO: Falha na instalação."
+        rm -rf "$tmp_dir"
         exit 1
     fi
 
-    # Ajustar permissões para 777 em todos os arquivos listados no arquivo quel/<nome_do_pacote> sem extensão
+    # Ajusta permissões
     if [ -f "/quel/$package_name" ]; then
         while IFS= read -r file; do
-            chmod 777 "/$file"
+            [ -n "$file" ] && chmod 777 "/$file"
         done < "/quel/$package_name"
     fi
 
-    echo "Instalação concluída com sucesso."
     rm -rf "$tmp_dir"
+
+    echo "Pacote instalado com sucesso."
 }
 
-# Função para remover o pacote
+# Função para remover pacote
 remove_package() {
     local package_name=$1
 
     if [ ! -f "/quel/$package_name" ]; then
-        echo "Programa não está instalado ou já foi removido."
+        echo "Pacote não instalado."
         exit 1
     fi
 
-    local file_count
-    file_count=$(wc -l < "/quel/$package_name")
-    echo "Encontrados $file_count arquivos para remoção."
+    if [ "$AUTO_YES" != "1" ]; then
+        read -p "Deseja remover $package_name? (S/N): " response
 
-    read -p "Tem certeza que deseja remover o pacote $package_name? (S/N): " response
-    if [[ "$response" != "S" && "$response" != "s" ]]; then
-        echo "Remoção cancelada."
-        exit 0
+        if [[ "$response" != "S" && "$response" != "s" ]]; then
+            echo "Remoção cancelada."
+            exit 0
+        fi
     fi
 
     while IFS= read -r file || [ -n "$file" ]; do
-        if [ -n "$file" ]; then
-            rm -f "$file"
-        fi
+        [ -n "$file" ] && rm -f "$file"
     done < "/quel/$package_name"
 
-    echo "Remoção concluída com sucesso."
     rm -f "/quel/$package_name"
+
+    echo "Pacote removido com sucesso."
 }
 
-# Função para atualizar os arquivos de repositório
+# Atualiza arquivos de repositório
 update_repo_file() {
     local repo_url="https://quieux.github.io/update"
     local repo_pub_url="https://quieux.github.io/update-pub"
-    local repo_file="/etc/quel/repo"
-    local repo_pub_file="/etc/quel/repo-pub"
 
-    wget -q "$repo_url" -O "$repo_file"
+    wget -q "$repo_url" -O "/etc/quel/repo"
+
     if [ $? -ne 0 ]; then
-        echo "Falha ao baixar o arquivo de atualização do repositório normal."
+        echo "ERRO: Falha ao atualizar repositório."
         exit 1
     fi
 
-    wget -q "$repo_pub_url" -O "$repo_pub_file"
+    wget -q "$repo_pub_url" -O "/etc/quel/repo-pub"
+
     if [ $? -ne 0 ]; then
-        echo "Falha ao baixar o arquivo de atualização do repositório público."
+        echo "ERRO: Falha ao atualizar repositório público."
         exit 1
     fi
 
-    echo "Arquivos de repositório atualizados com sucesso."
+    echo "Repositórios atualizados."
 }
 
-# Função para baixar um pacote usando quel-get
+# Lista pacotes disponíveis
+list_packages() {
+    local repo_file="/etc/quel/repo"
+
+    while IFS= read -r REPO_URL; do
+        [ -z "$REPO_URL" ] && continue
+
+        wget -qO- "$REPO_URL/" 2>/dev/null | \
+        grep -oE '[a-zA-Z0-9._+-]+\.quel' | \
+        sed 's/\.quel$//'
+
+    done < "$repo_file" | sort -u
+}
+
+# Lista pacotes públicos
+list_public_packages() {
+    local repo_file="/etc/quel/repo-pub"
+
+    while IFS= read -r REPO_URL; do
+        [ -z "$REPO_URL" ] && continue
+
+        wget -qO- "$REPO_URL/" 2>/dev/null | \
+        grep -oE '[a-zA-Z0-9._+-]+\.quel' | \
+        sed 's/\.quel$//'
+
+    done < "$repo_file" | sort -u
+}
+
+# Download pacote normal
 download_package() {
     local package_name=$1
-    local download_dir="/tmp"
-    
-    echo "Procurando por $package_name nos repositórios online..."
+    local package_path="/tmp/${package_name}.quel"
 
     quel-get "$package_name"
-    
+
     if [ $? -ne 0 ]; then
-        echo "Pacote não encontrado nos repositórios online."
+        echo "ERRO: Pacote não encontrado."
         exit 1
     fi
 
-    local package_path="$download_dir/$package_name.quel"
     if [ ! -f "$package_path" ]; then
-        echo "Erro ao baixar o pacote."
+        echo "ERRO: Download falhou."
         exit 1
     fi
 
-    echo "Pacote $package_name baixado com sucesso em $download_dir."
-    read -p "Deseja continuar com a instalação? (S/N): " response
-    if [[ "$response" != "S" && "$response" != "s" ]]; then
-        rm -f "$package_path"
-        echo "Download cancelado."
-        exit 0
-    fi
-
-    quel -i "$package_path"
+    AUTO_YES=1 quel -i "$package_path"
 }
 
-# Função para baixar um pacote usando quel-get-public
+# Download pacote público
 download_public_package() {
     local package_name=$1
-    local download_dir="/tmp"
-    
-    echo "Procurando por $package_name nos repositórios públicos online..."
+    local package_path="/tmp/${package_name}.quel"
 
     quel-get-public "$package_name"
-    
+
     if [ $? -ne 0 ]; then
-        echo "Pacote não encontrado nos repositórios públicos online."
+        echo "ERRO: Pacote público não encontrado."
         exit 1
     fi
 
-    local package_path="$download_dir/$package_name.quel"
     if [ ! -f "$package_path" ]; then
-        echo "Erro ao baixar o pacote."
+        echo "ERRO: Download falhou."
         exit 1
     fi
 
-    echo "Pacote $package_name baixado com sucesso em $download_dir."
-    read -p "Deseja continuar com a instalação? (S/N): " response
-    if [[ "$response" != "S" && "$response" != "s" ]]; then
-        rm -f "$package_path"
-        echo "Download cancelado."
-        exit 0
-    fi
-
-    quel -i "$package_path"
+    AUTO_YES=1 quel -i "$package_path"
 }
 
-# Verificar se o script está sendo executado como root
+# Root
 check_root
 
-# Verificar se os argumentos foram passados corretamente
-if [ "$#" -ne 2 ] && [ "$#" -ne 1 ]; then
-    echo "Uso: quel -i <caminho do pacote> | quel -r <nome do pacote> | quel -u | quel -d <nome do pacote> | quel -pub <nome do pacote>"
+# Verifica argumentos
+if [ "$#" -lt 1 ]; then
+    echo "Uso:"
+    echo "  quel -i <arquivo.quel>"
+    echo "  quel -r <pacote>"
+    echo "  quel -u"
+    echo "  quel -d <pacote>"
+    echo "  quel -pub <pacote>"
+    echo "  quel -l"
+    echo "  quel -lp"
     exit 1
 fi
 
-# Verificar o comando
+# Comandos
 case $1 in
+
     -i)
-        # Executar a função para descompactar e instalar o pacote
+        [ -z "$2" ] && exit 1
         extract_package "$2"
         install_package "$2"
         ;;
+
     -r)
-        # Executar a função para remover o pacote
+        [ -z "$2" ] && exit 1
         remove_package "$2"
         ;;
+
     -u)
-        # Executar a função para atualizar os arquivos de repositório
         update_repo_file
         ;;
+
     -d)
-        # Executar a função para baixar o pacote usando quel-get
+        [ -z "$2" ] && exit 1
         download_package "$2"
         ;;
+
     -pub)
-        # Executar a função para baixar o pacote usando quel-get-public
+        [ -z "$2" ] && exit 1
         download_public_package "$2"
         ;;
+
+    -l)
+        list_packages
+        ;;
+
+    -lp)
+        list_public_packages
+        ;;
+
     *)
-        echo "Comando desconhecido: $1"
-        echo "Uso: quel -i <caminho do pacote> | quel -r <nome do pacote> | quel -u | quel -d <nome do pacote> | quel -pub <nome do pacote>"
+        echo "Comando inválido."
         exit 1
         ;;
 esac
