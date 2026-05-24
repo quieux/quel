@@ -40,7 +40,7 @@ if [ $? -ne 0 ]; then
 fi
 
 # Aplica permissões de execução aos arquivos /bin/quel e /bin/quel-get
-chmod +x /bin/quel /bin/quel-get
+chmod +x /bin/quel /bin/quel-get /bin/quel-gtk
 
 # Verifica se o chmod foi aplicado corretamente
 if [ $? -ne 0 ]; then
