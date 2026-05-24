@@ -1,0 +1,524 @@
+#!/bin/bash
+############################################################
+# Quel GTK — Quieux Linux Package Manager
+# Autor: Ezequiel Carvalho
+# UI: Progress bar, confirmações, log estilo terminal, listas com busca
+############################################################
+
+TMP_DIR=$(mktemp -d)
+TMP_LIST="$TMP_DIR/pkg_list.txt"
+TMP_INSTALLED="$TMP_DIR/installed.txt"
+TMP_LOG="$TMP_DIR/log.txt"
+touch "$TMP_LIST" "$TMP_INSTALLED" "$TMP_LOG"
+
+INSTALLED_DB="/quel/list.txt"
+APP_NAME="Quel"
+APP_VERSION="1.0"
+
+# ──────────────────────────────────────────────
+# Root check
+# ──────────────────────────────────────────────
+if [ "$(id -u)" -ne 0 ]; then
+    yad --error \
+        --title="Quel — Acesso Negado" \
+        --width=380 \
+        --center \
+        --image=dialog-error \
+        --text="\n<b><big>Permissão insuficiente</big></b>\n\nExecute o programa com privilégios de <b>root</b>:\n\n<tt>    sudo quel-gtk</tt>\n" \
+        --button="Fechar:0"
+    exit 1
+fi
+
+mkdir -p /quel
+touch "$INSTALLED_DB"
+
+cleanup() { rm -rf "$TMP_DIR"; }
+trap cleanup EXIT
+
+# ──────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────
+log_msg()       { echo "$1" >> "$TMP_LOG"; }
+log_separator() { printf '\n%s\n\n' "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >> "$TMP_LOG"; }
+log_ts()        { log_msg "[$(date '+%H:%M:%S')] $1"; }
+
+register_package() {
+    grep -qx "$1" "$INSTALLED_DB" 2>/dev/null || echo "$1" >> "$INSTALLED_DB"
+}
+
+unregister_package() {
+    grep -vx "$1" "$INSTALLED_DB" > "$TMP_DIR/newlist.txt"
+    mv "$TMP_DIR/newlist.txt" "$INSTALLED_DB"
+}
+
+inst_count() {
+    [ -f "$INSTALLED_DB" ] || { echo "0"; return; }
+    local N
+    N=$(grep -c . "$INSTALLED_DB" 2>/dev/null) || N=0
+    echo "$N"
+}
+
+# ──────────────────────────────────────────────
+# Exibir log em janela estilo terminal
+# ──────────────────────────────────────────────
+show_log() {
+    local TITLE="$1" STATUS="$2"
+    local HEADER
+
+    if [ "$STATUS" = "ok" ]; then
+        HEADER="\n<span foreground='#3fb950' weight='bold' size='large'>✓  Operação concluída</span>\n"
+    else
+        HEADER="\n<span foreground='#f85149' weight='bold' size='large'>✗  Erro na operação</span>\n"
+    fi
+
+    yad \
+        --title="$TITLE — Quel" \
+        --width=780 \
+        --height=480 \
+        --center \
+        --window-icon=utilities-terminal \
+        --text="$HEADER" \
+        --text-align=left \
+        --text-info \
+        --filename="$TMP_LOG" \
+        --fontname="Monospace 10" \
+        --fore="#e6edf3" \
+        --back="#0d1117" \
+        --button="  Fechar  :0"
+}
+
+# ──────────────────────────────────────────────
+# Executar comando com progress bar animada
+# ──────────────────────────────────────────────
+run_with_progress() {
+    local TITLE="$1" MSG="$2" CMD="$3"
+    local EXIT_FILE="$TMP_DIR/exit_$$"
+
+    > "$TMP_LOG"
+    log_ts "$MSG"
+    log_separator
+
+    # Roda o comando em background
+    ( eval "$CMD" >> "$TMP_LOG" 2>&1; echo $? > "$EXIT_FILE" ) &
+    local BG_PID=$!
+
+    # Mostra progress pulsante enquanto roda
+    (
+        while kill -0 "$BG_PID" 2>/dev/null; do
+            echo "# $MSG"
+            sleep 0.08
+        done
+        echo "100"
+        echo "# Concluído."
+    ) | yad \
+        --progress \
+        --title="$TITLE" \
+        --width=480 \
+        --center \
+        --auto-close \
+        --no-cancel \
+        --pulsate \
+        --text="<b>$TITLE</b>" \
+        --window-icon=system-software-install 2>/dev/null
+
+    wait "$BG_PID" 2>/dev/null
+    local EC
+    EC=$(cat "$EXIT_FILE" 2>/dev/null || echo "1")
+
+    log_separator
+    if [ "$EC" = "0" ]; then
+        log_ts "✓ Finalizado com sucesso."
+        return 0
+    else
+        log_ts "✗ Erro (código de saída: $EC)."
+        return 1
+    fi
+}
+
+# ──────────────────────────────────────────────
+# Gerar lista de pacotes disponíveis
+# Formato do repo: nome;versao;descricao
+# ──────────────────────────────────────────────
+generate_package_list() {
+    > "$TMP_LIST"
+    while IFS= read -r REPO_URL; do
+        [ -z "$REPO_URL" ] && continue
+        wget -qO- "${REPO_URL}/list.txt" >> "$TMP_LIST" 2>/dev/null
+    done < /etc/quel/repo
+    # Remove linhas vazias e ordena por nome (campo 1), sem duplicatas
+    grep -v '^$' "$TMP_LIST" | sort -t';' -k1,1 -u > "$TMP_DIR/sorted.txt"
+    mv "$TMP_DIR/sorted.txt" "$TMP_LIST"
+}
+
+# ──────────────────────────────────────────────
+# Atualizar repositórios
+# ──────────────────────────────────────────────
+update_repos() {
+    run_with_progress \
+        "Atualizar Repositórios" \
+        "Sincronizando repositórios remotos..." \
+        "quel -u"
+    [ $? -eq 0 ] \
+        && show_log "Atualizar Repositórios" "ok" \
+        || show_log "Atualizar Repositórios" "error"
+}
+
+# ──────────────────────────────────────────────
+# Update do sistema
+# Compara /quel/update.txt (local) com {repo}/update.txt (remoto)
+# ──────────────────────────────────────────────
+system_update() {
+    local LOCAL_VER=0
+    local REMOTE_VER=0
+    local REPO_URL
+
+    # Lê o primeiro repo configurado (usa todos os repos disponíveis)
+    REPO_URL=$(grep -m1 -v '^$' /etc/quel/repo 2>/dev/null)
+
+    # Verifica versão local
+    if [ -f /quel/update.txt ]; then
+        LOCAL_VER=$(cat /quel/update.txt | tr -d '[:space:]')
+    fi
+
+    # Verifica versão remota (se não tiver repo configurado, tenta mesmo assim)
+    if [ -n "$REPO_URL" ]; then
+        REMOTE_VER=$(wget -qO- "${REPO_URL}/update.txt" 2>/dev/null | tr -d '[:space:]')
+    fi
+
+    # Se não conseguiu buscar a versão remota
+    if [ -z "$REMOTE_VER" ]; then
+        yad --warning \
+            --title="Update do Sistema" \
+            --width=420 \
+            --center \
+            --image=dialog-warning \
+            --text="\n<b>Não foi possível verificar atualizações.</b>\n\nVerifique sua conexão de rede ou os\nrepositórios configurados em:\n<tt>  /etc/quel/repo</tt>\n" \
+            --button="Fechar:0"
+        return
+    fi
+
+    # Sem update.txt local: sistema nunca foi atualizado, trata como versão 0
+    # Compara numericamente
+    if [ "$LOCAL_VER" -eq "$REMOTE_VER" ] 2>/dev/null; then
+        yad --info \
+            --title="Update do Sistema" \
+            --width=420 \
+            --center \
+            --image=dialog-information \
+            --text="\n<b>Sistema já está atualizado.</b>\n\n<tt>  Versão atual:       $LOCAL_VER\n  Versão disponível:  $REMOTE_VER</tt>\n\nNenhuma atualização disponível no momento.\n" \
+            --button="Fechar:0"
+        return
+    fi
+
+    if [ "$REMOTE_VER" -gt "$LOCAL_VER" ] 2>/dev/null; then
+        yad --question \
+            --title="Update Disponível" \
+            --width=440 \
+            --center \
+            --image=system-software-update \
+            --text="\n<b>Nova atualização disponível!</b>\n\n<tt>  Versão atual:       $LOCAL_VER\n  Versão disponível:  $REMOTE_VER</tt>\n\nDeseja instalar a atualização agora?\n" \
+            --button="Agora não:1" \
+            --button="  Instalar Update  :0"
+        [ $? -ne 0 ] && return
+
+        run_with_progress \
+            "Update do Sistema" \
+            "Baixando e instalando atualização v${REMOTE_VER}..." \
+            "AUTO_YES=1 quel -d update"
+        local RET=$?
+        if [ $RET -eq 0 ]; then
+            # Salva a nova versão localmente após sucesso
+            echo "$REMOTE_VER" > /quel/update.txt
+            register_package "update"
+            show_log "Update do Sistema" "ok"
+        else
+            show_log "Update do Sistema" "error"
+        fi
+    else
+        # Versão local maior que remota (situação anormal)
+        yad --info \
+            --title="Update do Sistema" \
+            --width=420 \
+            --center \
+            --image=dialog-information \
+            --text="\n<b>Sistema já está atualizado.</b>\n\n<tt>  Versão atual:       $LOCAL_VER\n  Versão disponível:  $REMOTE_VER</tt>\n\nNenhuma atualização disponível no momento.\n" \
+            --button="Fechar:0"
+    fi
+}
+
+# ──────────────────────────────────────────────
+# Instalar pacote
+# ──────────────────────────────────────────────
+install_package() {
+    local PACKAGE="$1"
+    [ -z "$PACKAGE" ] && return
+
+    yad --question \
+        --title="Confirmar Instalação" \
+        --width=420 \
+        --center \
+        --image=dialog-question \
+        --text="\n<b>Instalar pacote</b>\n\n<tt>  $PACKAGE</tt>\n\nDeseja prosseguir com a instalação?\n" \
+        --button="Cancelar:1" \
+        --button="  Instalar  :0"
+    [ $? -ne 0 ] && return
+
+    run_with_progress \
+        "Instalando $PACKAGE" \
+        "Baixando e instalando: $PACKAGE" \
+        "AUTO_YES=1 quel -d '$PACKAGE'"
+    local RET=$?
+    [ $RET -eq 0 ] && register_package "$PACKAGE"
+    [ $RET -eq 0 ] \
+        && show_log "Instalar: $PACKAGE" "ok" \
+        || show_log "Instalar: $PACKAGE" "error"
+}
+
+# ──────────────────────────────────────────────
+# Remover pacote
+# ──────────────────────────────────────────────
+remove_package() {
+    local PACKAGE="$1"
+    [ -z "$PACKAGE" ] && return
+
+    yad --question \
+        --title="Confirmar Remoção" \
+        --width=420 \
+        --center \
+        --image=dialog-warning \
+        --text="\n<b>Remover pacote</b>\n\n<tt>  $PACKAGE</tt>\n\n⚠  Esta ação irá desinstalar o pacote e todos os\n    seus arquivos do sistema.\n\nTem certeza que deseja continuar?\n" \
+        --button="Cancelar:1" \
+        --button="  Remover  :0"
+    [ $? -ne 0 ] && return
+
+    run_with_progress \
+        "Removendo $PACKAGE" \
+        "Removendo o pacote: $PACKAGE" \
+        "AUTO_YES=1 quel -r '$PACKAGE'"
+    local RET=$?
+    [ $RET -eq 0 ] && unregister_package "$PACKAGE"
+    [ $RET -eq 0 ] \
+        && show_log "Remover: $PACKAGE" "ok" \
+        || show_log "Remover: $PACKAGE" "error"
+}
+
+# ──────────────────────────────────────────────
+# Tela: Explorar pacotes disponíveis
+# ──────────────────────────────────────────────
+screen_browse() {
+    # Carregar lista com progress real
+    (
+        echo "10"; echo "# Conectando aos repositórios..."
+        generate_package_list
+        echo "100"; echo "# Lista carregada."
+    ) | yad --progress \
+        --title="Carregando Pacotes" \
+        --width=440 \
+        --center \
+        --auto-close \
+        --no-cancel \
+        --text="<b>Buscando pacotes disponíveis...</b>" \
+        --window-icon=system-software-install 2>/dev/null
+
+    if [ ! -s "$TMP_LIST" ]; then
+        yad --error \
+            --title="Repositório Vazio" \
+            --width=400 \
+            --center \
+            --image=dialog-error \
+            --text="\n<b><big>Nenhum pacote encontrado</big></b>\n\nVerifique sua conexão de rede e os\nrepositórios configurados em:\n<tt>  /etc/quel/repo</tt>\n" \
+            --button="Fechar:0"
+        return
+    fi
+
+    local PKG_COUNT
+    PKG_COUNT=$(grep -c . "$TMP_LIST" 2>/dev/null || echo "0")
+
+    # Constrói a lista parseando nome;versao;descricao e adicionando status
+    local RESULT
+    RESULT=$(
+        while IFS=';' read -r PKG_NAME PKG_VER PKG_DESC; do
+            [ -z "$PKG_NAME" ] && continue
+            if grep -qx "$PKG_NAME" "$INSTALLED_DB" 2>/dev/null; then
+                STATUS="✓ Instalado"
+            else
+                STATUS="Disponível"
+            fi
+            # Cada campo em linha separada para o YAD --list
+            echo "$PKG_NAME"
+            echo "${PKG_VER:-—}"
+            echo "${PKG_DESC:-Sem descrição}"
+            echo "$STATUS"
+        done < "$TMP_LIST" | \
+        yad \
+            --list \
+            --title="Explorar Pacotes — Quel" \
+            --width=860 \
+            --height=580 \
+            --center \
+            --window-icon=system-software-install \
+            --text="\n  <big><b>Repositório de Pacotes</b></big>   <span color='#888888'>$PKG_COUNT pacotes disponíveis</span>\n\n  <small>Pesquise pelo nome e clique em <b>Instalar</b> — pacotes já instalados podem ser reinstalados/atualizados.</small>\n" \
+            --search-column=1 \
+            --column="Pacote" \
+            --column="Versão" \
+            --column="Descrição" \
+            --column="Status" \
+            --print-column=1 \
+            --button="Fechar:1" \
+            --button="  Instalar / Atualizar  :0"
+    )
+    local RET=$?
+    local PKG
+    PKG=$(echo "$RESULT" | head -1 | tr -d '|\n')
+    [ $RET -eq 0 ] && [ -n "$PKG" ] && install_package "$PKG"
+}
+
+# ──────────────────────────────────────────────
+# Tela: Pacotes instalados
+# ──────────────────────────────────────────────
+screen_installed() {
+    cp "$INSTALLED_DB" "$TMP_INSTALLED"
+
+    if [ ! -s "$TMP_INSTALLED" ]; then
+        yad --info \
+            --title="Instalados — Quel" \
+            --width=400 \
+            --center \
+            --image=dialog-information \
+            --text="\n<b><big>Nenhum pacote instalado</big></b>\n\nUse <b>Explorar Pacotes</b> para instalar\nprogramas via repositório.\n" \
+            --button="Fechar:0"
+        return
+    fi
+
+    local INST_COUNT
+    INST_COUNT=$(grep -c . "$TMP_INSTALLED" 2>/dev/null || echo "0")
+
+    local RESULT
+    RESULT=$(
+        cat "$TMP_INSTALLED" | \
+        yad \
+            --list \
+            --title="Pacotes Instalados — Quel" \
+            --width=720 \
+            --height=580 \
+            --center \
+            --window-icon=system-software-install \
+            --text="\n  <big><b>Pacotes Instalados</b></big>   <span color='#888888'>$INST_COUNT pacotes</span>\n\n  <small>Selecione um pacote e clique em <b>Desinstalar</b> para removê-lo.</small>\n" \
+            --search-column=1 \
+            --column="Pacote Instalado" \
+            --print-column=1 \
+            --button="Fechar:1" \
+            --button="  Desinstalar Selecionado  :0"
+    )
+    local RET=$?
+    local PKG
+    PKG=$(echo "$RESULT" | head -1 | tr -d '|\n')
+    [ $RET -eq 0 ] && [ -n "$PKG" ] && remove_package "$PKG"
+}
+
+# ──────────────────────────────────────────────
+# Instalar arquivo .quel local
+# ──────────────────────────────────────────────
+install_local_file() {
+    local FILE
+    FILE=$(yad \
+        --file-selection \
+        --title="Selecionar Arquivo .quel — Quel" \
+        --width=720 \
+        --center \
+        --file-filter="Pacotes Quel | *.quel" \
+        --window-icon=system-software-install)
+    [ -z "$FILE" ] && return
+
+    local PACKAGE
+    PACKAGE=$(basename "$FILE" .quel)
+
+    yad --question \
+        --title="Instalar Arquivo Local" \
+        --width=440 \
+        --center \
+        --image=dialog-question \
+        --text="\n<b>Instalar arquivo local</b>\n\n<tt>  $(basename "$FILE")</tt>\n\nEste arquivo será instalado no sistema.\nDeseja prosseguir?\n" \
+        --button="Cancelar:1" \
+        --button="  Instalar  :0"
+    [ $? -ne 0 ] && return
+
+    run_with_progress \
+        "Instalando $PACKAGE" \
+        "Instalando: $(basename "$FILE")" \
+        "AUTO_YES=1 quel -i '$FILE'"
+    local RET=$?
+    [ $RET -eq 0 ] && register_package "$PACKAGE"
+    [ $RET -eq 0 ] \
+        && show_log "Instalar Local: $PACKAGE" "ok" \
+        || show_log "Instalar Local: $PACKAGE" "error"
+}
+
+# ──────────────────────────────────────────────
+# Tela de Manutenção (update repos + system update + local)
+# ──────────────────────────────────────────────
+screen_maintenance() {
+    local CHOICE
+    CHOICE=$(yad \
+        --list \
+        --title="Manutenção — Quel" \
+        --width=600 \
+        --height=360 \
+        --center \
+        --window-icon=system-software-update \
+        --text="\n  <big><b>Manutenção do Sistema</b></big>\n\n  <small>Selecione uma ação e clique em <b>Executar</b></small>\n" \
+        --no-headers \
+        --column="Ação" \
+        --column="Descrição" \
+        --print-column=1 \
+        --button="Fechar:1" \
+        --button="  Executar  :0" \
+        "Update do Sistema"       "Atualizar todos os pacotes instalados" \
+        "Instalar Arquivo .quel"  "Instalar um pacote a partir de um arquivo local"
+    )
+    local RET=$?
+    [ $RET -ne 0 ] && return
+
+    CHOICE=$(echo "$CHOICE" | tr -d '|\n')
+    case "$CHOICE" in
+        "Update do Sistema")      system_update ;;
+        "Instalar Arquivo .quel") install_local_file ;;
+    esac
+}
+
+# ──────────────────────────────────────────────
+# MENU PRINCIPAL — loop
+# ──────────────────────────────────────────────
+while true; do
+    CNT=$(inst_count)
+    REPO_COUNT=0
+    [ -f /etc/quel/repo ] && REPO_COUNT=$(grep -c . /etc/quel/repo 2>/dev/null || echo "0")
+
+    yad \
+        --title="Quel — Quieux Linux Package Manager" \
+        --width=480 \
+        --height=440 \
+        --center \
+        --window-icon=system-software-install \
+        --image=system-software-install \
+        --image-on-top \
+        --text="\n<span size='xx-large' weight='bold'>Quel</span>  <span size='large' color='#888888'>Package Manager</span>\n<span size='small' color='#999999'>Quieux Linux  ·  v${APP_VERSION}</span>\n\n<span size='small'><b>$CNT</b> pacotes instalados   ·   <b>$REPO_COUNT</b> repositórios ativos</span>\n" \
+        --text-align=center \
+        --button="  Atualizar Repositórios:1" \
+        --button="  Explorar Pacotes:3" \
+        --button="  Instalados  ($CNT):4" \
+        --button="  Manutenção:5" \
+        --button="  Sair:0" \
+        2>/dev/null
+
+    RET=$?
+    case $RET in
+        0|252) exit 0 ;;
+        1) update_repos ;;
+        3) screen_browse ;;
+        4) screen_installed ;;
+        5) screen_maintenance ;;
+        99) continue ;;
+        *) exit 0 ;;
+    esac
+done
